@@ -130,12 +130,12 @@ func TestMarkTransitions(t *testing.T) {
 
 	retry := mustCreate(t, s, sms("b"))
 	claimOne(t, s)
-	next := time.Now().Add(time.Minute).UTC().Truncate(time.Microsecond)
-	if err := s.MarkRetry(ctx, retry.ID, next, domain.Attempt{AttemptNo: 1, Error: "timeout"}); err != nil {
+	if err := s.MarkRetry(ctx, retry.ID, time.Minute, domain.Attempt{AttemptNo: 1, Error: "timeout"}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = s.Get(ctx, retry.ID)
-	if got.Status != domain.StatusPending || got.Attempts != 1 || !got.NextAttemptAt.Equal(next) ||
+	// Both timestamps come from the database clock, so the gap is exactly the delay.
+	if got.Status != domain.StatusPending || got.Attempts != 1 || got.NextAttemptAt.Sub(got.UpdatedAt) != time.Minute ||
 		got.LastError == nil || *got.LastError != "timeout" {
 		t.Fatalf("after MarkRetry: %+v", got)
 	}
@@ -155,12 +155,11 @@ func TestReschedule(t *testing.T) {
 	s := newStore(t)
 	n := mustCreate(t, s, sms("r"))
 	claimOne(t, s)
-	at := time.Now().Add(30 * time.Second).UTC().Truncate(time.Microsecond)
-	if err := s.Reschedule(context.Background(), n.ID, at); err != nil {
+	if err := s.Reschedule(context.Background(), n.ID, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.Get(context.Background(), n.ID)
-	if got.Status != domain.StatusPending || got.Attempts != 0 || !got.NextAttemptAt.Equal(at) {
+	if got.Status != domain.StatusPending || got.Attempts != 0 || got.NextAttemptAt.Sub(got.UpdatedAt) != 30*time.Second {
 		t.Fatalf("after Reschedule: %+v", got)
 	}
 }

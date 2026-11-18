@@ -24,5 +24,31 @@ services:
       postgres:
         condition: service_healthy
 
+  worker:
+    build: .
+    command: ["worker"]
+    environment:
+      DATABASE_URL: postgres://notifier:notifier@postgres:5432/notifier?sslmode=disable
+      PROVIDER_URL: ${PROVIDER_URL:-http://mock-provider:9090/send}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "9091:9091"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-provider:
+        condition: service_started
+    restart: unless-stopped
+
+  mock-provider:
+    build: .
+    entrypoint: ["/usr/local/bin/mockprovider"]
+    environment:
+      FAIL_RATE: ${MOCK_FAIL_RATE:-0}
+      RATE_429: ${MOCK_RATE_429:-0}
+      LATENCY_MS: ${MOCK_LATENCY_MS:-20}
+    ports:
+      - "9090:9090"
+
 volumes:
   pgdata:

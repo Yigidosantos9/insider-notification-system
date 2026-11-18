@@ -71,12 +71,15 @@ func (s *Store) MarkSent(ctx context.Context, id uuid.UUID, providerMessageID st
 		WHERE id = $1 AND status = 'processing'`, providerMessageID)
 }
 
-// MarkRetry records a transient failure and puts the row back in the queue, due at nextAt.
-func (s *Store) MarkRetry(ctx context.Context, id uuid.UUID, nextAt time.Time, a domain.Attempt) error {
+// MarkRetry records a transient failure and puts the row back in the queue,
+// due after delay. Due times are always computed from the database clock
+// (now()), the same clock Claim compares against, so clock skew between
+// application hosts and the database cannot reorder or stall retries.
+func (s *Store) MarkRetry(ctx context.Context, id uuid.UUID, delay time.Duration, a domain.Attempt) error {
 	return s.finish(ctx, id, a, `UPDATE notifications
-		SET status = 'pending', attempts = attempts + 1, next_attempt_at = $2, last_error = $3,
+		SET status = 'pending', attempts = attempts + 1, next_attempt_at = now() + $2::interval, last_error = $3,
 		    locked_until = NULL, updated_at = now()
-		WHERE id = $1 AND status = 'processing'`, nextAt, a.Error)
+		WHERE id = $1 AND status = 'processing'`, delay, a.Error)
 }
 
 // MarkFailed records a permanent failure (or exhausted retries): the dead-letter state.
@@ -86,12 +89,12 @@ func (s *Store) MarkFailed(ctx context.Context, id uuid.UUID, a domain.Attempt) 
 		WHERE id = $1 AND status = 'processing'`, a.Error)
 }
 
-// Reschedule returns a claimed row to the queue without spending an attempt
-// (used while the provider's circuit breaker is open).
-func (s *Store) Reschedule(ctx context.Context, id uuid.UUID, nextAt time.Time) error {
+// Reschedule returns a claimed row to the queue, due after delay, without
+// spending an attempt (used while the provider's circuit breaker is open).
+func (s *Store) Reschedule(ctx context.Context, id uuid.UUID, delay time.Duration) error {
 	_, err := s.pool.Exec(ctx, `UPDATE notifications
-		SET status = 'pending', next_attempt_at = $2, locked_until = NULL, updated_at = now()
-		WHERE id = $1 AND status = 'processing'`, id, nextAt)
+		SET status = 'pending', next_attempt_at = now() + $2::interval, locked_until = NULL, updated_at = now()
+		WHERE id = $1 AND status = 'processing'`, id, delay)
 	return err
 }
 
