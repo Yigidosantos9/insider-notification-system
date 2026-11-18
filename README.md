@@ -24,6 +24,8 @@ docker-compose up --build      # or: make up
 | Worker metrics / health | http://localhost:9091/metrics · `/health` |
 | Mock provider | http://localhost:9090/send |
 
+![Swagger UI listing every endpoint](docs/images/swagger-overview.png)
+
 Send a notification and watch it get delivered:
 
 ```bash
@@ -33,6 +35,10 @@ curl -s -X POST localhost:8080/api/v1/notifications \
 
 curl -s localhost:8080/api/v1/notifications/<id> | jq   # status: pending → sent
 ```
+
+A delivered notification as returned by `GET /api/v1/notifications/{id}`, with its delivery attempts, correlation ID and provider message ID:
+
+![GET notification response in Swagger UI](docs/images/swagger-get.png)
 
 End-to-end check against the running stack: `make smoke`. The database is not published on the host (so it can't clash with a local PostgreSQL); inspect it with `docker compose exec postgres psql -U notifier`.
 
@@ -48,6 +54,10 @@ By default the stack uses a bundled **mock provider**, because webhook.site's fr
    ```
 
 Each delivery is a `POST` with body `{"to", "channel", "content"}` and an `Idempotency-Key` header holding the notification ID.
+
+A delivery received by webhook.site (source IP and URL masked):
+
+![Request received by webhook.site](docs/images/webhook-site.png)
 
 ---
 
@@ -213,6 +223,10 @@ curl -X POST localhost:8080/api/v1/notifications/<id>/requeue
    "channels":{"sms":{"attempts":1000,"succeeded":982,"failed":18,"success_rate":0.982,
      "dead_lettered":2,"latency":{"avg_ms":24,"p50_ms":21,"p95_ms":48,"p99_ms":95}}}}
   ```
+
+  Live output after a mixed batch:
+
+  ![Metrics summary response](docs/images/metrics-summary.png)
 - **Metrics (Prometheus).**
   - API `:8080/metrics`: `notifications_created_total`, `notification_queue_depth{channel,priority}`, `http_requests_total`, `http_request_duration_seconds`.
   - Worker `:9091/metrics`: `notifications_sent_total`, `notifications_failed_total{reason}`, `notifications_retried_total`, `notification_delivery_latency_seconds`, `notification_queue_depth`, `provider_circuit_state`.
