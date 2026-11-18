@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/Yigidosantos9/insider-notification-system/internal/api"
 	"github.com/Yigidosantos9/insider-notification-system/internal/config"
 	"github.com/Yigidosantos9/insider-notification-system/internal/domain"
 	"github.com/Yigidosantos9/insider-notification-system/internal/logging"
@@ -124,5 +125,38 @@ func runWorker(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 }
 
 func runAPI(ctx context.Context, cfg config.Config, log *slog.Logger) error {
-	return errors.New("api not implemented yet")
+	pool, err := connect(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	st := store.New(pool)
+
+	reg := newRegistry()
+	m := metrics.New(reg)
+	go m.RunQueueDepthPoller(ctx, st, 2*time.Second, log)
+
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           api.NewServer(st, m, reg, log, cfg.MaxAttempts),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("api listening", "addr", cfg.HTTPAddr)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down api")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
 }
