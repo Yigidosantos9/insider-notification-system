@@ -47,7 +47,15 @@ services:
     environment:
       DATABASE_URL: postgres://notifier:notifier@postgres:5432/notifier?sslmode=disable
       PROVIDER_URL: ${PROVIDER_URL:-http://mock-provider:9090/send}
+      PROVIDER_TIMEOUT: ${PROVIDER_TIMEOUT:-5s}
+      RATE_LIMIT_PER_SECOND: ${RATE_LIMIT_PER_SECOND:-100}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-20}
+      CLAIM_BATCH: ${CLAIM_BATCH:-50}
       MAX_ATTEMPTS: ${MAX_ATTEMPTS:-5}
+      RETRY_BASE: ${RETRY_BASE:-2s}
+      RETRY_CAP: ${RETRY_CAP:-5m}
+      BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-5}
+      BREAKER_COOLDOWN: ${BREAKER_COOLDOWN:-30s}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "9091:9091"
