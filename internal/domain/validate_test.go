@@ -123,3 +123,12 @@ func TestPriorityRank(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateBatchDuplicateIdempotencyKeys(t *testing.T) {
+	items := []NewNotification{validSMS(), validSMS(), validSMS()}
+	items[0].IdempotencyKey = "k"
+	items[2].IdempotencyKey = "k"
+	if got := fieldsOf(t, ValidateBatch(items)); len(got) != 1 || got[0] != "items[2].idempotency_key" {
+		t.Fatalf("got %v, want [items[2].idempotency_key]", got)
+	}
+}

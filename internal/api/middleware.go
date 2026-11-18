@@ -52,8 +52,9 @@ func (s *server) withObservability(next http.Handler) http.Handler {
 			route = "unmatched"
 		}
 		elapsed := time.Since(start)
-		s.metrics.HTTPRequests.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
-		s.metrics.HTTPDuration.WithLabelValues(r.Method, route).Observe(elapsed.Seconds())
+		method := metricMethod(r.Method)
+		s.metrics.HTTPRequests.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
+		s.metrics.HTTPDuration.WithLabelValues(method, route).Observe(elapsed.Seconds())
 
 		level := slog.LevelInfo
 		if rec.status >= 500 {
@@ -62,6 +63,17 @@ func (s *server) withObservability(next http.Handler) http.Handler {
 		s.logger(r).Log(r.Context(), level, "http request",
 			"method", r.Method, "path", r.URL.Path, "status", rec.status, "duration_ms", elapsed.Milliseconds())
 	})
+}
+
+// metricMethod maps arbitrary client-supplied methods to a fixed set, so a
+// client cannot create unbounded metric series.
+func metricMethod(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
+		http.MethodHead, http.MethodOptions:
+		return m
+	}
+	return "OTHER"
 }
 
 // withRecover turns panics into 500 responses instead of dropping the connection.

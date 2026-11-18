@@ -103,10 +103,20 @@ func ValidateBatch(items []NewNotification) error {
 		ve.add("items", fmt.Sprintf("must contain between 1 and %d notifications", MaxBatchSize))
 		return ve
 	}
+	firstByKey := map[string]int{}
 	for i, it := range items {
 		if err := it.Validate(); err != nil {
 			for _, f := range err.(*ValidationError).Fields {
 				ve.add(fmt.Sprintf("items[%d].%s", i, f.Field), f.Message)
+			}
+		}
+		// The same key twice in one batch is almost certainly a client bug; it
+		// would silently collapse into one notification.
+		if it.IdempotencyKey != "" {
+			if j, dup := firstByKey[it.IdempotencyKey]; dup {
+				ve.add(fmt.Sprintf("items[%d].idempotency_key", i), fmt.Sprintf("duplicates items[%d]", j))
+			} else {
+				firstByKey[it.IdempotencyKey] = i
 			}
 		}
 	}

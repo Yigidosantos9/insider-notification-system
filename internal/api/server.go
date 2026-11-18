@@ -59,8 +59,14 @@ func NewServer(st Store, m *metrics.Metrics, gatherer prometheus.Gatherer, log *
 	mux.Handle("GET /metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
 	registerDocs(mux)
 
-	// Outermost first: correlation ID → recover → logging/metrics → routes.
-	return withCorrelationID(s.withRecover(s.withObservability(mux)))
+	return s.chain(mux)
+}
+
+// chain wraps the routes with middleware. Outermost first:
+// correlation ID → logging/metrics → panic recovery → routes. Recovery sits
+// inside observability so a panic is still logged and counted as a 500.
+func (s *server) chain(h http.Handler) http.Handler {
+	return withCorrelationID(s.withObservability(s.withRecover(h)))
 }
 
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
