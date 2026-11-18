@@ -284,3 +284,13 @@ func TestBodyTooLarge(t *testing.T) {
 		t.Fatalf("got %d", r.code)
 	}
 }
+
+func TestDocsServed(t *testing.T) {
+	e := newEnv(t)
+	if r := e.do("GET", "/docs", ""); r.code != http.StatusOK || !strings.Contains(r.raw, "swagger-ui") {
+		t.Fatalf("/docs: %d", r.code)
+	}
+	if r := e.do("GET", "/openapi.yaml", ""); r.code != http.StatusOK || !strings.Contains(r.raw, "openapi: 3.0.3") {
+		t.Fatalf("/openapi.yaml: %d %.100s", r.code, r.raw)
+	}
+}
