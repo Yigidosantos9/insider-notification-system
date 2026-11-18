@@ -19,7 +19,8 @@ docker-compose up --build      # or: make up
 | REST API | http://localhost:8080/api/v1 |
 | Swagger UI | http://localhost:8080/docs |
 | OpenAPI spec | http://localhost:8080/openapi.yaml ([source](api/openapi.yaml)) |
-| API metrics / health / readiness | http://localhost:8080/metrics · `/health` · `/ready` |
+| Metrics summary (JSON) | http://localhost:8080/api/v1/metrics/summary?window=5m |
+| Prometheus metrics / health / readiness | http://localhost:8080/metrics · `/health` · `/ready` |
 | Worker metrics / health | http://localhost:9091/metrics · `/health` |
 | Mock provider | http://localhost:9090/send |
 
@@ -98,7 +99,7 @@ The trade-off is a throughput ceiling. PostgreSQL handles thousands of claims pe
 cmd/notifier/        entrypoint: api | worker | migrate
 cmd/mockprovider/    local fake provider with failure injection
 internal/domain/     types, statuses, validation rules
-internal/store/      PostgreSQL repository (store.go) and queue operations (queue.go)
+internal/store/      PostgreSQL repository (store.go), queue operations (queue.go), templates, metrics summary
 internal/worker/     per-channel delivery loops, retry policy
 internal/provider/   HTTP client, failure classification, circuit breaker
 internal/api/        handlers (incl. templates), middleware (correlation id, logging, metrics, recover)
@@ -151,7 +152,7 @@ Jitter spreads out retries from a burst of failures (for example a provider blip
 
 **Graceful shutdown.** On `SIGTERM` the worker stops claiming, lets in-flight sends finish and records their results. A row still waiting for a rate-limit token is handed back to the queue.
 
-Try it: `MOCK_FAIL_RATE=0.5 docker-compose up` makes the mock fail half of all requests. Watch `notifications_retried_total` and `provider_circuit_state` on :9091/metrics.
+Try it: `MOCK_FAIL_RATE=0.5 docker-compose up` makes the mock fail half of all requests. Watch `GET /api/v1/metrics/summary` (success rate drops, dead letters appear) and `provider_circuit_state` on :9091/metrics.
 
 ---
 
@@ -206,6 +207,12 @@ curl -X POST localhost:8080/api/v1/notifications/<id>/requeue
 
 ## Observability
 
+- **Metrics summary (JSON)**: `GET /api/v1/metrics/summary?window=5m` answers the brief's questions in one call, without needing Prometheus: queue depth per channel and priority, scheduled and processing counts, and per channel the attempts, success/failure counts, **success rate**, dead letters and **latency avg/p50/p95/p99**. It is computed from the database, so it stays correct with any number of replicas.
+  ```json
+  {"window":"5m0s","queue_depth":{"sms":{"high":3}},"scheduled":12,"processing":20,
+   "channels":{"sms":{"attempts":1000,"succeeded":982,"failed":18,"success_rate":0.982,
+     "dead_lettered":2,"latency":{"avg_ms":24,"p50_ms":21,"p95_ms":48,"p99_ms":95}}}}
+  ```
 - **Metrics (Prometheus).**
   - API `:8080/metrics`: `notifications_created_total`, `notification_queue_depth{channel,priority}`, `http_requests_total`, `http_request_duration_seconds`.
   - Worker `:9091/metrics`: `notifications_sent_total`, `notifications_failed_total{reason}`, `notifications_retried_total`, `notification_delivery_latency_seconds`, `notification_queue_depth`, `provider_circuit_state`.
@@ -227,7 +234,7 @@ CI (GitHub Actions) runs lint, the test suite, and a `docker compose up` + smoke
 
 ## Configuration
 
-All settings are environment variables with defaults (see [.env.example](.env.example)).
+All settings are environment variables with defaults (see [.env.example](.env.example)). Docker Compose passes each of them through, e.g. `RETRY_BASE=200ms BREAKER_COOLDOWN=10s docker-compose up`.
 
 | Variable | Default | Purpose |
 |---|---|---|

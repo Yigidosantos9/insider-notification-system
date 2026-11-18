@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,6 +29,7 @@ type Store interface {
 	Ping(ctx context.Context) error
 	CreateTemplate(ctx context.Context, t domain.NewTemplate) (domain.Template, error)
 	GetTemplate(ctx context.Context, id uuid.UUID) (domain.Template, error)
+	Summary(ctx context.Context, window time.Duration) (store.Summary, error)
 }
 
 type server struct {
@@ -51,6 +53,7 @@ func NewServer(st Store, m *metrics.Metrics, gatherer prometheus.Gatherer, log *
 	mux.HandleFunc("GET /api/v1/batches/{id}", s.getBatch)
 	mux.HandleFunc("POST /api/v1/templates", s.createTemplate)
 	mux.HandleFunc("GET /api/v1/templates/{id}", s.getTemplate)
+	mux.HandleFunc("GET /api/v1/metrics/summary", s.metricsSummary)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -69,9 +72,35 @@ func (s *server) chain(h http.Handler) http.Handler {
 	return withCorrelationID(s.withObservability(s.withRecover(h)))
 }
 
+const maxSummaryWindow = 24 * time.Hour
+
+// metricsSummary is a human-friendly JSON view of the system: queue depth,
+// success/failure rates and latency percentiles over ?window= (default 5m).
+// Prometheus scrapes /metrics; this endpoint answers the same questions
+// without needing a Prometheus server.
+func (s *server) metricsSummary(w http.ResponseWriter, r *http.Request) {
+	window := 5 * time.Minute
+	if v := r.URL.Query().Get("window"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 || d > maxSummaryWindow {
+			badRequest(w, "window must be a duration between 1s and 24h, e.g. 5m or 1h")
+			return
+		}
+		window = d
+	}
+	sum, err := s.store.Summary(r.Context(), window)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Ping(r.Context()); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "database": err.Error()})
+		// The detail goes to the log only: it can contain hosts and user names.
+		s.logger(r).Error("readiness check failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "database": "unreachable"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})

@@ -100,7 +100,10 @@ paths:
     post:
       tags: [batches]
       summary: Create up to 1000 notifications at once
-      description: All-or-nothing — if any item is invalid, nothing is created and the 422 response names each bad field as `items[i].field`.
+      description: |
+        All-or-nothing — if any item is invalid, nothing is created and the 422 response names each bad field as `items[i].field`.
+        An item whose `idempotency_key` was already used by an earlier request returns that earlier notification's id
+        (it keeps its original `batch_id`); repeating a key inside one batch is a 422.
       operationId: createBatch
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
@@ -265,6 +268,28 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/v1/metrics/summary:
+    get:
+      tags: [operations]
+      summary: Real-time metrics summary (JSON)
+      description: |
+        Queue depth, success/failure rates and provider latency percentiles per channel,
+        computed from the database over the given window. Correct across any number of
+        api/worker replicas. For Prometheus, scrape `/metrics` instead.
+      operationId: metricsSummary
+      parameters:
+        - name: window
+          in: query
+          description: Look-back window as a Go duration (1s–24h).
+          schema: { type: string, default: 5m, example: 1h }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricsSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
   /health:
     get:
       tags: [operations]
@@ -413,6 +438,39 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }
+    MetricsSummary:
+      type: object
+      required: [window, generated_at, queue_depth, scheduled, processing, channels]
+      properties:
+        window: { type: string, example: 5m0s }
+        generated_at: { type: string, format: date-time }
+        queue_depth:
+          type: object
+          description: 'Due pending notifications: channel → priority → count.'
+          additionalProperties:
+            type: object
+            additionalProperties: { type: integer }
+          example: { sms: { high: 12, normal: 340 } }
+        scheduled: { type: integer, description: Pending but not yet due (scheduled or waiting out a retry backoff). }
+        processing: { type: integer, description: Currently claimed by a worker. }
+        channels:
+          type: object
+          description: Delivery stats per channel within the window (channels without attempts are omitted).
+          additionalProperties:
+            type: object
+            properties:
+              attempts: { type: integer }
+              succeeded: { type: integer }
+              failed: { type: integer }
+              success_rate: { type: number, example: 0.982 }
+              dead_lettered: { type: integer }
+              latency:
+                type: object
+                properties:
+                  avg_ms: { type: integer }
+                  p50_ms: { type: integer }
+                  p95_ms: { type: integer }
+                  p99_ms: { type: integer }
     NewTemplate:
       type: object
       required: [name, channel, body]

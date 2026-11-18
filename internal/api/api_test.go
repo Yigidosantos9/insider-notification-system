@@ -337,3 +337,80 @@ func TestTemplates(t *testing.T) {
 		t.Fatalf("batch with bad template vars: %d %s", b.code, b.raw)
 	}
 }
+
+func TestBatchReplayDoesNotCountAsCreated(t *testing.T) {
+	e := newEnv(t)
+	e.do("POST", "/api/v1/notifications", validSMS, "Idempotency-Key", "dup-1")
+	b := e.do("POST", "/api/v1/notifications/batch", `{"notifications":[
+		{"channel":"sms","recipient":"+905551234567","content":"hello","priority":"high","idempotency_key":"dup-1"},
+		{"channel":"sms","recipient":"+905551234567","content":"new one"}]}`)
+	if b.code != http.StatusCreated {
+		t.Fatalf("batch: %d %s", b.code, b.raw)
+	}
+	m := e.do("GET", "/metrics", "")
+	if !strings.Contains(m.raw, `notifications_created_total{channel="sms"} 2`) {
+		t.Fatalf("replayed batch item must not be counted as created; metrics:\n%s", grepLines(m.raw, "notifications_created_total"))
+	}
+}
+
+func grepLines(s, sub string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.Contains(l, sub) {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// failingPingStore makes only Ping fail; other methods are never called.
+type failingPingStore struct{ Store }
+
+func (failingPingStore) Ping(context.Context) error {
+	return fmt.Errorf("dial tcp 10.0.0.5:5432: password authentication failed for user \"notifier\"")
+}
+
+func TestReadyDoesNotLeakDatabaseError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	srv := httptest.NewServer(NewServer(failingPingStore{}, metrics.New(reg), reg, slog.New(slog.NewTextHandler(io.Discard, nil)), 5))
+	defer srv.Close()
+	r, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", r.StatusCode)
+	}
+	if strings.Contains(string(body), "10.0.0.5") || strings.Contains(string(body), "password") {
+		t.Fatalf("readiness response leaks internal error: %s", body)
+	}
+}
+
+func TestMetricsSummary(t *testing.T) {
+	e := newEnv(t)
+	e.do("POST", "/api/v1/notifications", validSMS)
+
+	r := e.do("GET", "/api/v1/metrics/summary", "")
+	if r.code != http.StatusOK || r.body["window"] != "5m0s" {
+		t.Fatalf("summary: %d %s", r.code, r.raw)
+	}
+	depth, _ := r.body["queue_depth"].(map[string]any)
+	sms, _ := depth["sms"].(map[string]any)
+	if sms["high"].(float64) != 1 {
+		t.Fatalf("queue depth: %s", r.raw)
+	}
+	if _, ok := r.body["channels"].(map[string]any); !ok {
+		t.Fatalf("channels missing: %s", r.raw)
+	}
+
+	if r := e.do("GET", "/api/v1/metrics/summary?window=1h", ""); r.code != http.StatusOK || r.body["window"] != "1h0m0s" {
+		t.Fatalf("window=1h: %d %s", r.code, r.raw)
+	}
+	for _, w := range []string{"abc", "0s", "-5m", "48h"} {
+		if r := e.do("GET", "/api/v1/metrics/summary?window="+w, ""); r.code != http.StatusBadRequest {
+			t.Fatalf("window=%s: got %d", w, r.code)
+		}
+	}
+}

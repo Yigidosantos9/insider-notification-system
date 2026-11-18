@@ -106,7 +106,12 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 	ids := make([]uuid.UUID, len(created))
 	for i, n := range created {
 		ids[i] = n.ID
-		s.metrics.Created.WithLabelValues(string(n.Channel)).Inc()
+		// An item replaying an idempotency key from an earlier request returns
+		// that earlier notification (with its original batch_id); it was not
+		// created now, so it is not counted.
+		if n.BatchID != nil && *n.BatchID == batchID {
+			s.metrics.Created.WithLabelValues(string(n.Channel)).Inc()
+		}
 	}
 	writeJSON(w, http.StatusCreated, batchResponse{BatchID: batchID, Count: len(ids), IDs: ids})
 }
