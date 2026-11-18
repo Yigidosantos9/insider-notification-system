@@ -294,3 +294,46 @@ func TestDocsServed(t *testing.T) {
 		t.Fatalf("/openapi.yaml: %d %.100s", r.code, r.raw)
 	}
 }
+
+func TestTemplates(t *testing.T) {
+	e := newEnv(t)
+	c := e.do("POST", "/api/v1/templates", `{"name":"otp","channel":"sms","body":"Hi {{.name}}, code {{.code}}"}`)
+	if c.code != http.StatusCreated || c.body["id"] == "" {
+		t.Fatalf("create template: %d %s", c.code, c.raw)
+	}
+	tid := c.body["id"].(string)
+	if r := e.do("GET", "/api/v1/templates/"+tid, ""); r.code != http.StatusOK || r.body["name"] != "otp" {
+		t.Fatalf("get template: %d %s", r.code, r.raw)
+	}
+	if r := e.do("POST", "/api/v1/templates", `{"name":"otp","channel":"sms","body":"x"}`); r.code != http.StatusConflict {
+		t.Fatalf("duplicate name: %d", r.code)
+	}
+	if r := e.do("POST", "/api/v1/templates", `{"name":"bad","channel":"sms","body":"{{.oops"}`); r.code != http.StatusUnprocessableEntity || r.errField(0) != "body" {
+		t.Fatalf("invalid body: %d %s", r.code, r.raw)
+	}
+
+	n := e.do("POST", "/api/v1/notifications",
+		`{"recipient":"+905551234567","template_id":"`+tid+`","variables":{"name":"Ayşe","code":"1234"}}`)
+	if n.code != http.StatusCreated || n.body["content"] != "Hi Ayşe, code 1234" || n.body["channel"] != "sms" || n.body["template_id"] != tid {
+		t.Fatalf("templated notification: %d %s", n.code, n.raw)
+	}
+
+	cases := map[string]string{
+		"variables":   `{"recipient":"+905551234567","template_id":"` + tid + `","variables":{"name":"x"}}`,
+		"content":     `{"recipient":"+905551234567","template_id":"` + tid + `","content":"also","variables":{"name":"x","code":"1"}}`,
+		"template_id": `{"recipient":"+905551234567","template_id":"7b0c7c1e-2f0a-4a8e-9a43-3a3e7a1f0000","variables":{}}`,
+		"channel":     `{"channel":"email","recipient":"a@b.co","template_id":"` + tid + `","variables":{"name":"x","code":"1"}}`,
+	}
+	for field, body := range cases {
+		if r := e.do("POST", "/api/v1/notifications", body); r.code != http.StatusUnprocessableEntity || r.errField(0) != field {
+			t.Fatalf("%s: got %d %s", field, r.code, r.raw)
+		}
+	}
+
+	b := e.do("POST", "/api/v1/notifications/batch", `{"notifications":[
+		{"recipient":"+905551234567","template_id":"`+tid+`","variables":{"name":"A","code":"1"}},
+		{"recipient":"+905551234568","template_id":"`+tid+`","variables":{"name":"B"}}]}`)
+	if b.code != http.StatusUnprocessableEntity || b.errField(0) != "items[1].variables" {
+		t.Fatalf("batch with bad template vars: %d %s", b.code, b.raw)
+	}
+}

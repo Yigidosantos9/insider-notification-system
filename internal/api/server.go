@@ -26,6 +26,8 @@ type Store interface {
 	Cancel(ctx context.Context, id uuid.UUID) (domain.Notification, error)
 	Requeue(ctx context.Context, id uuid.UUID) (domain.Notification, error)
 	Ping(ctx context.Context) error
+	CreateTemplate(ctx context.Context, t domain.NewTemplate) (domain.Template, error)
+	GetTemplate(ctx context.Context, id uuid.UUID) (domain.Template, error)
 }
 
 type server struct {
@@ -47,6 +49,8 @@ func NewServer(st Store, m *metrics.Metrics, gatherer prometheus.Gatherer, log *
 	mux.HandleFunc("POST /api/v1/notifications/{id}/cancel", s.cancelNotification)
 	mux.HandleFunc("POST /api/v1/notifications/{id}/requeue", s.requeueNotification)
 	mux.HandleFunc("GET /api/v1/batches/{id}", s.getBatch)
+	mux.HandleFunc("POST /api/v1/templates", s.createTemplate)
+	mux.HandleFunc("GET /api/v1/templates/{id}", s.getTemplate)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

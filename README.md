@@ -101,7 +101,7 @@ internal/domain/     types, statuses, validation rules
 internal/store/      PostgreSQL repository (store.go) and queue operations (queue.go)
 internal/worker/     per-channel delivery loops, retry policy
 internal/provider/   HTTP client, failure classification, circuit breaker
-internal/api/        handlers, middleware (correlation id, logging, metrics, recover)
+internal/api/        handlers (incl. templates), middleware (correlation id, logging, metrics, recover)
 internal/metrics/    Prometheus collectors
 migrations/          versioned SQL (golang-migrate), embedded in the binary
 api/openapi.yaml     OpenAPI 3 specification
@@ -119,6 +119,7 @@ api/openapi.yaml     OpenAPI 3 specification
 | Content validation | Per channel: SMS recipient in E.164 and ≤ 160 chars; email a plain address and ≤ 10,000 chars; push a device token and ≤ 256 chars. All errors are returned together |
 | Idempotency | `Idempotency-Key` header (or `idempotency_key` field) has a unique index. A replay returns the original with `200`; the same key with a different payload returns `409`. Safe under concurrent duplicates (`INSERT … ON CONFLICT DO NOTHING`) |
 | Scheduling (bonus) | `scheduled_at` sets `next_attempt_at`. The row is not claimed before then and can be cancelled while pending |
+| Templates (bonus) | `POST /templates` stores a Go-template body (`Hi {{.name}}`). A notification with `template_id` + `variables` gets its content rendered at creation time and then validated like any other content (e.g. the SMS 160-character limit). A missing variable returns 422 rather than an empty substitution |
 
 ## Delivery & retry design
 
@@ -182,6 +183,12 @@ curl localhost:8080/api/v1/batches/<batch_id>          # {"total":2,"counts":{"s
 curl 'localhost:8080/api/v1/notifications?status=failed&channel=sms&from=2026-11-18T00:00:00Z&limit=50'
 curl 'localhost:8080/api/v1/notifications?cursor=<next_cursor>'
 
+# Templates
+curl -X POST localhost:8080/api/v1/templates -H 'Content-Type: application/json' \
+  -d '{"name":"otp","channel":"sms","body":"Hi {{.name}}, your code is {{.code}}"}'
+curl -X POST localhost:8080/api/v1/notifications -H 'Content-Type: application/json' \
+  -d '{"recipient":"+905551234567","template_id":"<template_id>","variables":{"name":"Ayşe","code":"1234"}}'
+
 # Cancel a pending/scheduled notification; requeue a failed one
 curl -X POST localhost:8080/api/v1/notifications/<id>/cancel
 curl -X POST localhost:8080/api/v1/notifications/<id>/requeue
@@ -193,6 +200,7 @@ curl -X POST localhost:8080/api/v1/notifications/<id>/requeue
 | 404 | `not_found` | unknown notification or batch |
 | 409 | `invalid_state` | cancel a non-pending notification, requeue a non-failed one |
 | 409 | `idempotency_conflict` | idempotency key reused with a different payload |
+| 409 | `template_name_taken` | template name already exists |
 | 413 | `body_too_large` | body over 10MB |
 | 422 | `validation_failed` | invalid fields, listed in `details` (e.g. `items[7].recipient`) |
 
@@ -253,4 +261,4 @@ All settings are environment variables with defaults (see [.env.example](.env.ex
 
 ## Future work
 
-WebSocket status updates, OpenTelemetry tracing (the correlation ID is the hook), message templates, per-tenant rate limits, and provider failover.
+WebSocket status updates, OpenTelemetry tracing (the correlation ID is the hook), template listing/versioning, per-tenant rate limits, and provider failover.

@@ -99,6 +99,11 @@ type NewNotification struct {
 	Content        string     `json:"content"`
 	IdempotencyKey string     `json:"idempotency_key,omitempty"`
 	ScheduledAt    *time.Time `json:"scheduled_at,omitempty"`
+
+	// Optional template: when set, Content is rendered from the template with
+	// Variables (and must not be supplied by the client).
+	TemplateID *uuid.UUID        `json:"template_id,omitempty"`
+	Variables  map[string]string `json:"variables,omitempty"`
 }
 
 // Normalize trims the recipient and applies the default priority.
@@ -133,6 +138,7 @@ type Notification struct {
 	Priority          Priority   `json:"priority"`
 	Recipient         string     `json:"recipient"`
 	Content           string     `json:"content"`
+	TemplateID        *uuid.UUID `json:"template_id,omitempty"`
 	Status            Status     `json:"status"`
 	Attempts          int        `json:"attempts"`
 	MaxAttempts       int        `json:"max_attempts"`

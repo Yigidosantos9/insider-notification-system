@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,6 +25,15 @@ func (s *server) createNotification(w http.ResponseWriter, r *http.Request) {
 	}
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		n.IdempotencyKey = key
+	}
+	fields, err := s.applyTemplate(r.Context(), &n, map[uuid.UUID]domain.Template{})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if len(fields) > 0 {
+		s.writeStoreError(w, r, &domain.ValidationError{Fields: fields})
+		return
 	}
 	n.Normalize()
 	if err := n.Validate(); err != nil {
@@ -61,6 +71,24 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 	var req batchRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	if len(req.Notifications) > 0 && len(req.Notifications) <= domain.MaxBatchSize {
+		var fields []domain.FieldError
+		cache := map[uuid.UUID]domain.Template{} // each template is loaded once per batch
+		for i := range req.Notifications {
+			fe, err := s.applyTemplate(r.Context(), &req.Notifications[i], cache)
+			if err != nil {
+				s.writeStoreError(w, r, err)
+				return
+			}
+			for _, f := range fe {
+				fields = append(fields, domain.FieldError{Field: fmt.Sprintf("items[%d].%s", i, f.Field), Message: f.Message})
+			}
+		}
+		if len(fields) > 0 {
+			s.writeStoreError(w, r, &domain.ValidationError{Fields: fields})
+			return
+		}
 	}
 	for i := range req.Notifications {
 		req.Notifications[i].Normalize()

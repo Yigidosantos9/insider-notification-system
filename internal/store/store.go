@@ -38,7 +38,7 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 const columns = `id, batch_id, idempotency_key, payload_hash, correlation_id, channel, priority,
 	recipient, content, status, attempts, max_attempts, next_attempt_at, scheduled_at, locked_until,
-	last_error, provider_message_id, created_at, updated_at, sent_at`
+	last_error, provider_message_id, created_at, updated_at, sent_at, template_id`
 
 func scanNotification(row pgx.Row) (domain.Notification, error) {
 	var n domain.Notification
@@ -46,7 +46,7 @@ func scanNotification(row pgx.Row) (domain.Notification, error) {
 	var priority int16
 	err := row.Scan(&n.ID, &n.BatchID, &n.IdempotencyKey, &payloadHash, &n.CorrelationID, &n.Channel,
 		&priority, &n.Recipient, &n.Content, &n.Status, &n.Attempts, &n.MaxAttempts, &n.NextAttemptAt,
-		&n.ScheduledAt, &n.LockedUntil, &n.LastError, &n.ProviderMessageID, &n.CreatedAt, &n.UpdatedAt, &n.SentAt)
+		&n.ScheduledAt, &n.LockedUntil, &n.LastError, &n.ProviderMessageID, &n.CreatedAt, &n.UpdatedAt, &n.SentAt, &n.TemplateID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return n, ErrNotFound
 	}
@@ -77,8 +77,8 @@ type querier interface {
 
 const insertSQL = `
 INSERT INTO notifications (id, batch_id, idempotency_key, payload_hash, correlation_id, channel, priority,
-	recipient, content, max_attempts, scheduled_at, next_attempt_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($11, now()))
+	recipient, content, max_attempts, scheduled_at, next_attempt_at, template_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($11, now()), $12)
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING ` + columns
 
@@ -95,7 +95,7 @@ func insertOne(ctx context.Context, q querier, n domain.NewNotification, batchID
 	}
 	hash := n.PayloadHash()
 	got, err := scanNotification(q.QueryRow(ctx, insertSQL, uuid.New(), batchID, key, hash, correlationID,
-		n.Channel, n.Priority.Rank(), n.Recipient, n.Content, maxAttempts, n.ScheduledAt))
+		n.Channel, n.Priority.Rank(), n.Recipient, n.Content, maxAttempts, n.ScheduledAt, n.TemplateID))
 	if err == nil {
 		return got, true, nil
 	}

@@ -34,7 +34,7 @@ func Postgres(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("start postgres: %v", initErr)
 	}
 	if _, err := pool.Exec(context.Background(),
-		`TRUNCATE notifications, notification_attempts RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE notifications, notification_attempts, templates RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return pool

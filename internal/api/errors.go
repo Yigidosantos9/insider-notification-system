@@ -48,6 +48,8 @@ func (s *server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeError(w, http.StatusConflict, "invalid_state", "operation not allowed in the notification's current status")
 	case errors.Is(err, store.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "idempotency_conflict", "idempotency key was already used with a different payload")
+	case errors.Is(err, store.ErrTemplateNameTaken):
+		writeError(w, http.StatusConflict, "template_name_taken", "a template with this name already exists")
 	case errors.Is(err, store.ErrInvalidCursor):
 		badRequest(w, "invalid cursor")
 	default:
