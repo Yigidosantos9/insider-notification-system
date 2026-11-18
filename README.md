@@ -33,7 +33,7 @@ curl -s -X POST localhost:8080/api/v1/notifications \
 curl -s localhost:8080/api/v1/notifications/<id> | jq   # status: pending → sent
 ```
 
-End-to-end check against the running stack: `make smoke`.
+End-to-end check against the running stack: `make smoke`. The database is not published on the host (so it can't clash with a local PostgreSQL); inspect it with `docker compose exec postgres psql -U notifier`.
 
 ### Using webhook.site as the provider
 
@@ -114,7 +114,7 @@ api/openapi.yaml     OpenAPI 3 specification
 | Requirement | How |
 |---|---|
 | Async queue workers | `worker` claims due rows per channel and sends them on a bounded goroutine pool (`WORKER_CONCURRENCY`, default 20 per channel) |
-| **100 msg/s per channel** | One token bucket (`golang.org/x/time/rate`, 100/s, burst 100) per channel. A token is taken before every send. Channels never share a bucket |
+| **100 msg/s per channel** | One token bucket (`golang.org/x/time/rate`, 100/s, burst 1) per channel, so sends are spaced 10ms apart and **no 1-second window ever exceeds 100**. A larger burst would let up to 200 through in the first second. A token is taken before every send, and channels never share a bucket (verified by a sliding-window test) |
 | Priority (high/normal/low) | Stored as 0/1/2 and claimed `ORDER BY priority, next_attempt_at`. Strict priority: high drains first |
 | Content validation | Per channel: SMS recipient in E.164 and ≤ 160 chars; email a plain address and ≤ 10,000 chars; push a device token and ≤ 256 chars. All errors are returned together |
 | Idempotency | `Idempotency-Key` header (or `idempotency_key` field) has a unique index. A replay returns the original with `200`; the same key with a different payload returns `409`. Safe under concurrent duplicates (`INSERT … ON CONFLICT DO NOTHING`) |
@@ -138,14 +138,14 @@ Each attempt is recorded in `notification_attempts` (status code, error, latency
 **2. Back off exponentially, with full jitter**
 
 ```
-delay(n) = random(0, min(cap, base · 2^(n-1)))     base = 2s, cap = 5m, max_attempts = 5
+delay(n) = random(0, min(cap, base · 2^(n-1)))     base = 2s, cap = 5m, max_attempts = 5 (stored per notification)
 ```
 
 Jitter spreads out retries from a burst of failures (for example a provider blip during a flash sale) so they don't return in lockstep. The row goes back to `pending` with `next_attempt_at = now() + delay`, and the same claim query picks it up later, so no separate retry queue is needed. Due times always come from the **database clock**, which keeps clock skew between app hosts and the DB from reordering the queue.
 
 **3. Dead letter.** When attempts are exhausted, the status becomes `failed` with `last_error`. Failed notifications can be listed (`?status=failed`) and sent again with `POST /notifications/{id}/requeue`, which resets the attempt budget.
 
-**4. Circuit breaker per channel (bonus: failure handling).** After 5 consecutive transient failures the channel's breaker **opens** for 30s. While open, claimed notifications are rescheduled to after the cool-down **without spending an attempt**, so an outage doesn't burn through everyone's retry budget. Then a single **half-open** probe is sent: success closes the circuit, failure reopens it. The state is exported as `provider_circuit_state`.
+**4. Circuit breaker per channel (bonus: failure handling).** After 5 consecutive transient failures the channel's breaker **opens** for 30s. While open, the worker **stops claiming** that channel's notifications. They stay queued untouched, and nothing spends an attempt, so an outage doesn't burn through everyone's retry budget. (Sends already in flight when it opens are rescheduled for after the cool-down, also without spending an attempt.) Then a single **half-open** probe is sent: success closes the circuit, failure reopens it. The state is exported as `provider_circuit_state`.
 
 **5. Delivery guarantee: at-least-once.** If a worker crashes after the provider accepted a message but before the database commit, the lease expires and the message is sent again. The notification ID is sent as an `Idempotency-Key` header so a provider that supports it can drop the duplicate. Exactly-once delivery to a third party isn't achievable without the third party's cooperation, so this design minimises the window and makes duplicates detectable.
 

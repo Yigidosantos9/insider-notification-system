@@ -135,7 +135,7 @@ Errors use one JSON shape: `{error:{code,message,details[]}}`.
   RETURNING …
   ```
   Priority is strict: high drains before normal before low. Starvation is acceptable here and documented.
-- **Rate limit**: `golang.org/x/time/rate` token bucket per channel, 100/s, burst 100, waited
+- **Rate limit**: `golang.org/x/time/rate` token bucket per channel, 100/s, burst 1 (strict: no 1s window over 100), waited
   before every send. This is per worker process, and compose runs one worker. The README notes that
   multiple worker replicas need a shared limiter (Redis GCRA), which is the scaling path.
 - **Lease recovery**: a reaper resets `processing` rows whose `locked_until` has passed back to `pending`,
@@ -153,7 +153,7 @@ Errors use one JSON shape: `{error:{code,message,details[]}}`.
 - **Dead letter**: when attempts are exhausted, `status=failed` with `last_error`. Visible via the list filter
   and requeue-able via the API.
 - **Circuit breaker per channel** (bonus "Failure Handling"): opens after N consecutive failures and stays open
-  for a cool-down. While open, claimed items are re-scheduled without spending attempts. Half-open probes one request.
+  for a cool-down. While open, the worker stops claiming that channel; items already in flight are re-scheduled without spending attempts. Half-open probes one request.
 - **Idempotent send**: the notification `id` is sent as an `Idempotency-Key` header to the provider. Delivery is
   at-least-once (a crash after the provider accepts but before the DB commit can resend). This is stated
   honestly in the README.

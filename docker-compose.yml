@@ -5,8 +5,11 @@ services:
       POSTGRES_USER: notifier
       POSTGRES_PASSWORD: notifier
       POSTGRES_DB: notifier
-    ports:
-      - "5432:5432"
+    # Not published on the host to avoid clashing with a local PostgreSQL.
+    # Inspect with: docker compose exec postgres psql -U notifier
+    # Uncomment to run the api/worker from the host (make run-api):
+    # ports:
+    #   - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
