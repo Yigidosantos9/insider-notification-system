@@ -84,9 +84,12 @@ func (w *Worker) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, ch := range w.cfg.Channels {
 		r := &channelRunner{
-			Worker:  w,
-			ch:      ch,
-			limiter: rate.NewLimiter(rate.Limit(w.cfg.RatePerSecond), w.cfg.RatePerSecond),
+			Worker: w,
+			ch:     ch,
+			// Burst 1 spaces sends evenly (every 10ms at 100/s), so no 1-second
+			// window ever exceeds the limit. A burst of N would allow up to 2N in
+			// the first second (N instantly + N refilled).
+			limiter: rate.NewLimiter(rate.Limit(w.cfg.RatePerSecond), 1),
 			breaker: provider.NewBreaker(w.cfg.BreakerThreshold, w.cfg.BreakerCooldown, time.Now),
 			slots:   make(chan struct{}, w.cfg.Concurrency),
 		}
@@ -123,6 +126,15 @@ func (w *Worker) reapLoop(ctx context.Context) {
 func (r *channelRunner) loop(ctx context.Context) {
 	defer r.wg.Wait() // graceful shutdown: let in-flight sends finish
 	for {
+		// Provider down: leave the queue alone until the breaker lets a probe through.
+		if r.breaker.Blocked() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(r.cfg.PollInterval):
+			}
+			continue
+		}
 		// Block until at least one send slot is free, then grab any other free ones
 		// so a single claim query can fill them all.
 		select {
@@ -139,6 +151,15 @@ func (r *channelRunner) loop(ctx context.Context) {
 			default:
 			}
 			break
+		}
+
+		// Re-check after waiting for a slot: the send that just freed it may have
+		// tripped the breaker.
+		if r.breaker.Blocked() {
+			for i := 0; i < free; i++ {
+				<-r.slots
+			}
+			continue
 		}
 
 		claimed, err := r.q.Claim(ctx, r.ch, free, r.cfg.Lease)
@@ -195,8 +216,8 @@ func (r *channelRunner) handle(ctx context.Context, n domain.Notification) {
 
 	if err == nil {
 		r.breaker.Success()
-		ok := 202
-		attempt.StatusCode = &ok
+		code := resp.StatusCode
+		attempt.StatusCode = &code
 		if err := r.q.MarkSent(dbCtx, n.ID, resp.MessageID, attempt); err != nil {
 			log.Error("mark sent failed", "error", err)
 			return
@@ -221,7 +242,7 @@ func (r *channelRunner) handle(ctx context.Context, n domain.Notification) {
 		// The provider answered, so it is healthy; the request itself is bad.
 		r.breaker.Success()
 		r.fail(dbCtx, log, n, attempt, "permanent")
-	case r.cfg.Retry.Exhausted(attemptNo):
+	case r.exhausted(n, attemptNo):
 		r.breaker.Failure()
 		r.fail(dbCtx, log, n, attempt, "exhausted")
 	default:
@@ -234,6 +255,15 @@ func (r *channelRunner) handle(ctx context.Context, n domain.Notification) {
 		r.metrics.Retried.WithLabelValues(string(n.Channel)).Inc()
 		log.Warn("delivery failed, will retry", "attempt", attemptNo, "error", attempt.Error, "retry_in", delay.String())
 	}
+}
+
+// exhausted uses the attempt budget stored on the notification (set at
+// creation, reset by requeue), falling back to the worker's policy.
+func (r *channelRunner) exhausted(n domain.Notification, attempts int) bool {
+	if n.MaxAttempts > 0 {
+		return attempts >= n.MaxAttempts
+	}
+	return r.cfg.Retry.Exhausted(attempts)
 }
 
 func (r *channelRunner) fail(ctx context.Context, log *slog.Logger, n domain.Notification, a domain.Attempt, reason string) {

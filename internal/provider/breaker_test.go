@@ -66,3 +66,22 @@ func TestBreakerSuccessResetsFailureCount(t *testing.T) {
 		t.Fatalf("non-consecutive failures opened the breaker")
 	}
 }
+
+func TestBreakerBlocked(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(0, 0)}
+	b := NewBreaker(1, 30*time.Second, clk.now)
+	if b.Blocked() {
+		t.Fatal("closed breaker must not block")
+	}
+	b.Failure()
+	if !b.Blocked() {
+		t.Fatal("open breaker within cooldown must block")
+	}
+	clk.advance(30 * time.Second)
+	if b.Blocked() {
+		t.Fatal("breaker past cooldown must not block (a probe is due)")
+	}
+	if !b.Allow() {
+		t.Fatal("Blocked must not consume the half-open probe")
+	}
+}

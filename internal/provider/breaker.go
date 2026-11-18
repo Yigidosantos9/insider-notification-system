@@ -61,6 +61,23 @@ func (b *Breaker) Allow() bool {
 	}
 }
 
+// Blocked reports, without changing state, whether no request could be sent
+// right now: open and still cooling down, or half-open with the probe in
+// flight. The worker checks it before claiming work, so an outage does not
+// make it churn through the queue rescheduling rows it cannot send.
+func (b *Breaker) Blocked() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case BreakerOpen:
+		return b.now().Sub(b.openedAt) < b.cooldown
+	case BreakerHalfOpen:
+		return b.probeInFlight
+	default:
+		return false
+	}
+}
+
 // Success records a successful request and closes the circuit.
 func (b *Breaker) Success() {
 	b.mu.Lock()

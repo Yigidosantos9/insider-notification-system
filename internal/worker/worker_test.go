@@ -43,6 +43,9 @@ func newFakeProvider(t *testing.T, respond func(n int) int) *fakeProvider {
 		f.times[req.Channel] = append(f.times[req.Channel], time.Now())
 		f.mu.Unlock()
 		code := f.respond(n)
+		if code == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "10")
+		}
 		w.WriteHeader(code)
 		if code == http.StatusAccepted {
 			_, _ = w.Write([]byte(`{"messageId":"m","status":"accepted","timestamp":"2026-11-18T00:00:00Z"}`))
@@ -134,6 +137,32 @@ func TestWorkerDeliversInPriorityOrder(t *testing.T) {
 	}
 }
 
+func TestWorkerRecordsActualSuccessStatusCode(t *testing.T) {
+	s := store.New(testutil.Postgres(t))
+	f := newFakeProvider(t, always(http.StatusOK)) // provider answers 200, not 202
+	n := create(t, s, smsN("ok", domain.PriorityNormal))
+	startWorker(t, s, f, testConfig())
+
+	eventually(t, 5*time.Second, func() bool { return status(t, s, n).Status == domain.StatusSent }, "sent")
+	atts, _ := s.Attempts(context.Background(), n.ID)
+	if len(atts) != 1 || atts[0].StatusCode == nil || *atts[0].StatusCode != http.StatusOK {
+		t.Fatalf("attempt status code = %v, want 200", atts)
+	}
+}
+
+func TestWorkerHonoursRetryAfter(t *testing.T) {
+	s := store.New(testutil.Postgres(t))
+	f := newFakeProvider(t, always(http.StatusTooManyRequests))
+	n := create(t, s, smsN("throttled", domain.PriorityNormal))
+	startWorker(t, s, f, testConfig()) // backoff alone would be ≤ 20ms
+
+	eventually(t, 5*time.Second, func() bool { return status(t, s, n).Attempts == 1 }, "first attempt")
+	got := status(t, s, n)
+	if wait := got.NextAttemptAt.Sub(got.UpdatedAt); got.Status != domain.StatusPending || wait < 10*time.Second {
+		t.Fatalf("status %s, next attempt in %s; want pending and >= 10s (Retry-After)", got.Status, wait)
+	}
+}
+
 func TestWorkerRetryThenSuccess(t *testing.T) {
 	s := store.New(testutil.Postgres(t))
 	f := newFakeProvider(t, func(n int) int {
@@ -156,10 +185,11 @@ func TestWorkerRetryThenSuccess(t *testing.T) {
 func TestWorkerRetryExhausted(t *testing.T) {
 	s := store.New(testutil.Postgres(t))
 	f := newFakeProvider(t, always(http.StatusInternalServerError))
-	n := create(t, s, smsN("doomed", domain.PriorityNormal))
-	cfg := testConfig()
-	cfg.Retry.MaxAttempts = 3
-	startWorker(t, s, f, cfg)
+	n, _, err := s.Create(context.Background(), smsN("doomed", domain.PriorityNormal), "corr", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startWorker(t, s, f, testConfig())
 
 	eventually(t, 5*time.Second, func() bool { return status(t, s, n).Status == domain.StatusFailed }, "failed after exhausting retries")
 	if got := status(t, s, n); got.Attempts != 3 {
@@ -198,14 +228,29 @@ func TestWorkerRateLimit(t *testing.T) {
 	defer f.mu.Unlock()
 	span := func(ts []time.Time) time.Duration { return ts[len(ts)-1].Sub(ts[0]) }
 	smsSpan, emailSpan := span(f.times["sms"]), span(f.times["email"])
-	// Burst of 100, then 50 more at 100/s ≈ 500ms.
-	if smsSpan < 400*time.Millisecond {
-		t.Fatalf("150 sms delivered in %s; rate limit of 100/s not enforced", smsSpan)
+	// "Max 100 per second" must hold in every 1-second window, not just on average.
+	if w := maxInWindow(f.times["sms"], time.Second); w > 102 {
+		t.Fatalf("%d sms sent within one second; limit is 100/s", w)
+	}
+	if smsSpan < 1300*time.Millisecond {
+		t.Fatalf("150 sms delivered in %s; expected ~1.5s at 100/s", smsSpan)
 	}
 	// Email has its own bucket: its 100 fit in the burst and must not wait behind sms.
 	if emailSpan >= smsSpan {
 		t.Fatalf("email span %s >= sms span %s; channels share a limiter", emailSpan, smsSpan)
 	}
+}
+
+// maxInWindow returns the largest number of timestamps falling within any window of length d.
+func maxInWindow(ts []time.Time, d time.Duration) int {
+	best, j := 0, 0
+	for i := range ts {
+		for ts[i].Sub(ts[j]) >= d {
+			j++
+		}
+		best = max(best, i-j+1)
+	}
+	return best
 }
 
 func TestWorkerNeverSendsCancelled(t *testing.T) {
@@ -250,9 +295,31 @@ func TestWorkerBreakerOpens(t *testing.T) {
 		}
 		if got.Attempts == 0 {
 			untouched++
+			// While the breaker is open the worker must not claim (and reschedule)
+			// rows at all, so untouched rows keep their original due time.
+			if !got.NextAttemptAt.Equal(n.NextAttemptAt) {
+				t.Fatalf("row %s was rescheduled from %s to %s while breaker open", n.ID, n.NextAttemptAt, got.NextAttemptAt)
+			}
 		}
 	}
 	if untouched != 3 {
 		t.Fatalf("%d rows without attempts, want 3 (rescheduled without spending attempts)", untouched)
+	}
+}
+
+func TestWorkerHonoursPerNotificationMaxAttempts(t *testing.T) {
+	s := store.New(testutil.Postgres(t))
+	f := newFakeProvider(t, always(http.StatusInternalServerError))
+	// Stored with max_attempts=2 while the worker's own default is 5:
+	// the value on the notification must win.
+	n, _, err := s.Create(context.Background(), smsN("two tries", domain.PriorityNormal), "corr", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startWorker(t, s, f, testConfig())
+
+	eventually(t, 5*time.Second, func() bool { return status(t, s, n).Status == domain.StatusFailed }, "failed")
+	if got := status(t, s, n); got.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", got.Attempts)
 	}
 }

@@ -33,7 +33,7 @@ func TestSendSuccess(t *testing.T) {
 	if got != (Request{To: "+905551234567", Channel: "sms", Content: "hi"}) {
 		t.Fatalf("body = %+v", got)
 	}
-	if resp.MessageID != "m-1" || resp.Status != "accepted" {
+	if resp.MessageID != "m-1" || resp.Status != "accepted" || resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("resp = %+v", resp)
 	}
 }

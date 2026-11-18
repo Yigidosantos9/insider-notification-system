@@ -25,6 +25,8 @@ type Response struct {
 	MessageID string `json:"messageId"`
 	Status    string `json:"status"`
 	Timestamp string `json:"timestamp"`
+
+	StatusCode int `json:"-"` // HTTP status the provider answered with
 }
 
 // SendError is returned for every non-2xx outcome, including transport errors (StatusCode 0).
@@ -89,6 +91,7 @@ func (c *Client) Send(ctx context.Context, idempotencyKey string, r Request) (Re
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var out Response
 		_ = json.Unmarshal(raw, &out) // best effort; see doc comment
+		out.StatusCode = resp.StatusCode
 		return out, nil
 	}
 
