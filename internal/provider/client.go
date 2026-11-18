@@ -83,7 +83,7 @@ func (c *Client) Send(ctx context.Context, idempotencyKey string, r Request) (Re
 	if err != nil {
 		return Response{}, &SendError{Retryable: true, Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

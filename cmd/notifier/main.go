@@ -107,7 +107,7 @@ func runWorker(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			log.Error("metrics server failed", "error", err)
 		}
 	}()
-	defer msrv.Close()
+	defer func() { _ = msrv.Close() }()
 
 	w := worker.New(st, provider.NewClient(cfg.ProviderURL, cfg.ProviderTimeout), worker.Config{
 		Channels:         domain.Channels,

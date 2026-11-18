@@ -18,9 +18,12 @@ wait_status() { # id expected timeout_s
   fail "notification $1 not $2 after $3s (is $(status_of "$1"))"
 }
 
-echo "→ health"
-curl -sf "$API/health" >/dev/null || fail "api not healthy"
-curl -sf "$API/ready" >/dev/null || fail "api not ready"
+echo "→ waiting for api readiness"
+for _ in $(seq 1 60); do
+  curl -sf "$API/ready" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+curl -sf "$API/ready" >/dev/null || fail "api not ready after 30s"
 
 echo "→ single notification"
 single=$(post /api/v1/notifications '{"channel":"sms","recipient":"+905551234567","content":"smoke single","priority":"high"}' | jq -r .id)
